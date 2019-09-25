@@ -26,11 +26,12 @@ private:
     std::condition_variable m_data_cond;
 
     node* get_tail() {
-        std::lock_guard<std::mutex> tail_lock(m_tail_mutex);
+        std::lock_guard<std::mutex> tail_lock{m_tail_mutex};
         return m_tail;
     }
 
-    std::unique_ptr<node> pop_head() {
+    std::unique_ptr<node> try_pop_head() {
+        std::lock_guard<std::mutex> head_lock{m_head_mutex};
         if (m_head.get() == get_tail()) {
             return nullptr;
         }
@@ -39,36 +40,10 @@ private:
         return head;
     }
 
-    std::unique_lock<std::mutex> wait_for_data() {
-        std::unique_lock<std::mutex> head_lock(m_head_mutex);
-        m_data_cond.wait(head_lock, [&] { return m_head.get() != get_tail(); });
-        return head_lock;
-    }
-
-    std::unique_ptr<node> wait_pop_head() {
-        std::unique_lock<std::mutex> head_lock(wait_for_data());
-        return pop_head();
-    }
-
-    std::unique_ptr<node> try_pop_head() {
-        std::lock_guard<std::mutex> head_lock(m_head_mutex);
-        return pop_head();
-    }
-
 public:
-    FineSafeQueue() : m_head(std::make_unique<node>()), m_tail(m_head.get()) {}
+    FineSafeQueue() : m_head{std::make_unique<node>()}, m_tail{m_head.get()} {}
     FineSafeQueue(const FineSafeQueue&) = delete;
     FineSafeQueue& operator=(const FineSafeQueue&) = delete;
-
-    std::shared_ptr<T> wait_and_pop() {
-        std::unique_ptr<node> const head = wait_pop_head();
-        return head->data;
-    }
-
-    std::shared_ptr<T> try_pop() {
-        std::unique_ptr<node> head = try_pop_head();
-        return head ? head->data : nullptr;
-    }
 
     bool try_pop(T& value) {
         std::unique_ptr<node> const head = try_pop_head();
@@ -80,15 +55,15 @@ public:
     }
 
     bool empty() const noexcept {
-        std::lock_guard<std::mutex> head_lock(m_head_mutex);
+        std::lock_guard<std::mutex> head_lock{m_head_mutex};
         return (m_head.get() == get_tail());
     }
 
     void push(T new_value) {
-        std::shared_ptr<T> new_data(std::make_shared<T>(std::move(new_value)));
-        std::unique_ptr<node> p(std::make_unique<node>());
+        auto new_data = std::make_shared<T>(std::move(new_value));
+        auto p = std::make_unique<node>();
         {
-            std::lock_guard<std::mutex> tail_lock(m_tail_mutex);
+            std::lock_guard<std::mutex> tail_lock{m_tail_mutex};
             m_tail->data = new_data;
             node* const new_tail = p.get();
             m_tail->next = std::move(p);
@@ -165,7 +140,7 @@ private:
     }
 
 public:
-    ThreadPoolExecutor(unsigned max_workers = 0) : m_done(false), m_guard(m_threads) {
+    ThreadPoolExecutor(unsigned max_workers = 0) : m_done{false}, m_guard{m_threads} {
         const unsigned total = std::thread::hardware_concurrency();
         if (max_workers == 0 || max_workers > total) {
             max_workers = total;
@@ -184,9 +159,9 @@ public:
     template <typename Function, typename... Args>
     auto submit(Function&& f, Args&&... args) {
         using result_type = std::result_of_t<Function(Args...)>;
-        std::packaged_task<result_type()> task(
-            std::bind(std::forward<Function>(f), std::forward<Args>(args)...));
-        std::future<result_type> future(task.get_future());
+        std::packaged_task<result_type()> task{
+            std::bind(std::forward<Function>(f), std::forward<Args>(args)...)};
+        std::future<result_type> future{task.get_future()};
         /**
          *  Instance of std::packaged_task, whose copy assignment operator is deleted, is move-only.
          */
