@@ -3,75 +3,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional> // std::bind
+#include <future>
+#include <memory>
 #include <mutex>
 #include <queue>
-#include <memory>
-#include <future>
-#include <functional> // std::bind
 #include <thread>
 #include <vector>
-
-template <typename T>
-class FineSafeQueue {
-private:
-    struct node {
-        std::shared_ptr<T> data;
-        std::unique_ptr<node> next;
-    };
-
-    std::mutex m_head_mutex;
-    std::unique_ptr<node> m_head;
-    std::mutex m_tail_mutex;
-    node* m_tail;
-    std::condition_variable m_data_cond;
-
-    node* get_tail() {
-        std::lock_guard<std::mutex> tail_lock{m_tail_mutex};
-        return m_tail;
-    }
-
-    std::unique_ptr<node> try_pop_head() {
-        std::lock_guard<std::mutex> head_lock{m_head_mutex};
-        if (m_head.get() == get_tail()) {
-            return nullptr;
-        }
-        std::unique_ptr<node> head = std::move(m_head);
-        m_head = std::move(head->next);
-        return head;
-    }
-
-public:
-    FineSafeQueue() : m_head{std::make_unique<node>()}, m_tail{m_head.get()} {}
-    FineSafeQueue(const FineSafeQueue&) = delete;
-    FineSafeQueue& operator=(const FineSafeQueue&) = delete;
-
-    bool try_pop(T& value) {
-        std::unique_ptr<node> const head = try_pop_head();
-        if (head) {
-            value = std::move(*(head->data));
-            return true;
-        }
-        return false;
-    }
-
-    bool empty() const noexcept {
-        std::lock_guard<std::mutex> head_lock{m_head_mutex};
-        return (m_head.get() == get_tail());
-    }
-
-    void push(T new_value) {
-        auto new_data = std::make_shared<T>(std::move(new_value));
-        auto p = std::make_unique<node>();
-        {
-            std::lock_guard<std::mutex> tail_lock{m_tail_mutex};
-            m_tail->data = new_data;
-            node* const new_tail = p.get();
-            m_tail->next = std::move(p);
-            m_tail = new_tail;
-        }
-        m_data_cond.notify_one();
-    }
-};
 
 class MoveOnlyCallable {
 private:
@@ -124,18 +62,25 @@ class ThreadPoolExecutor {
 private:
     using callee_type = MoveOnlyCallable;
     std::atomic_bool m_done;
-    FineSafeQueue<callee_type> m_queue;
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cv;
+    std::queue<callee_type> m_queue;
     std::vector<std::thread> m_threads;
     ThreadGuard m_guard;
 
     void worker() {
         while (!m_done) {
             callee_type task;
-            if (m_queue.try_pop(task)) {
-                task();
-            } else {
-                std::this_thread::yield();
+            {
+                std::unique_lock<std::mutex> lock{m_mutex};
+                m_cv.wait(lock, [this] { return m_done || !m_queue.empty(); });
+                if (m_done) {
+                    return;
+                }
+                task = std::move(m_queue.front());
+                m_queue.pop();
             }
+            task();
         }
     }
 
@@ -154,7 +99,10 @@ public:
             throw;
         }
     }
-    ~ThreadPoolExecutor() { m_done = true; }
+    ~ThreadPoolExecutor() {
+        m_done = true;
+        m_cv.notify_all();
+    }
 
     template <typename Function, typename... Args>
     auto submit(Function&& f, Args&&... args) {
@@ -165,7 +113,11 @@ public:
         /**
          *  Instance of std::packaged_task, whose copy assignment operator is deleted, is move-only.
          */
-        m_queue.push(std::move(task));
+        {
+            std::lock_guard<std::mutex> lock{m_mutex};
+            m_queue.push(std::move(task));
+        }
+        m_cv.notify_one();
         return future;
     }
 };
