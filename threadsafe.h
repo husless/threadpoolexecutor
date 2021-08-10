@@ -85,7 +85,7 @@ private:
     }
 
 public:
-    ThreadPoolExecutor(unsigned max_workers = 0) : m_done{false}, m_guard{m_threads} {
+    explicit ThreadPoolExecutor(unsigned max_workers = 0) : m_done{false}, m_guard{m_threads} {
         const unsigned total = std::thread::hardware_concurrency();
         if (max_workers == 0 || max_workers > total) {
             max_workers = total;
