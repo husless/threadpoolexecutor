@@ -7,8 +7,8 @@ double worker(int k) {
 }
 
 double pi(int n) {
-    ThreadPoolExecutor pool;
     std::vector<std::future<double>> futures;
+    ThreadPoolExecutor pool;
     for (int i = 0; i < n; ++i) {
         futures.push_back(pool.submit(worker, i));
     }
