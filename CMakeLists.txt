@@ -42,7 +42,9 @@ target_compile_options(compiler_flags INTERFACE
 find_package(Threads REQUIRED)
 
 # a header only libaray
-add_library(tpexecutor INTERFACE)
+add_library(tpexecutor_header_only INTERFACE)
+add_library(tpexecutor::tpexecutor_header_only ALIAS tpexecutor_header_only) 
+
 target_link_libraries(tpexecutor INTERFACE Threads::Threads)
 target_include_directories(tpexecutor INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>"
